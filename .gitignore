@@ -1,7 +1,6 @@
 .idea/
 *.pck*
-data/enron
-data/spamassassin
+data/*/
 runs/*
 saved_models/*
 __pycache__/

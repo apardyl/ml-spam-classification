@@ -9,19 +9,21 @@ import numpy as np
 import torch
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 from torch import nn
+from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
+from torchinfo import summary
 
 from datasets import PreCachedDataset, create_vocabulary, WordIndexDataset, IndexVectorCollator
 from models import SpamClassifier
+from settings import MAX_MESSAGE_LENGTH_WORDS, VOCABULARY_SIZE, DATA_DIRECTORY
 from utils import load_train_state, save_train_state, FocalLoss
-
-VOCABULARY_SIZE = 2048
-MAX_MESSAGE_LENGTH_WORDS = 250
 
 TRAIN_BATCH_SIZE = 32
 TEST_BATCH_SIZE = 100
 
-CHECKPOINT_FILE = 'checkpoint.pck'
+LR = 0.005
+
+CHECKPOINT_PREFIX = 'checkpoint'
 LOGS_DIR = 'runs'
 SAVED_MODELS_PATH = 'saved_models'
 
@@ -55,24 +57,42 @@ def evaluate(model: nn.Module, test_loader: torch.utils.data.DataLoader, loss_fn
         return np.mean(epoch_accuracy)
 
 
-def train_model(train_loader, test_loader, model, epochs=30):
-    LR = 0.005
+def train_model(train_data_words, test_data_words, model, epochs=30):
+    log_file = os.path.join(LOGS_DIR, f'{model.__class__.__name__}.{str(train_data_words)}')
+    checkpoint_file = f'{CHECKPOINT_PREFIX}.{model.__class__.__name__}.{str(train_data_words)}'
 
-    # summary(model=model, input_size=next(iter(train_loader))[0].shape[1:], dtypes=[torch.long],
-    #         device=torch.device('cuda'))
+    model = model.cuda()
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9)
-    epoch = 0
-    best_model = copy.deepcopy(model)
-    best_score = -1
 
-    if os.path.exists(CHECKPOINT_FILE):
+    if os.path.exists(checkpoint_file):
         print('Loading checkpoint')
-        epoch, best_score = load_train_state(CHECKPOINT_FILE, model, optimizer, scheduler)
+        epoch, best_score, vocabulary = load_train_state(checkpoint_file, model, optimizer, scheduler)
+    else:
+        epoch = 0
+        best_score = -1
+        vocabulary = create_vocabulary(train_data_words, vocabulary_size=VOCABULARY_SIZE)
 
-    log_file = os.path.join(LOGS_DIR, model.__class__.__name__)
+    best_model = copy.deepcopy(model)
+
+    train_data = WordIndexDataset(train_data_words, vocabulary, max_words=MAX_MESSAGE_LENGTH_WORDS)
+    test_data = WordIndexDataset(test_data_words, vocabulary, max_words=MAX_MESSAGE_LENGTH_WORDS)
+    train_loader = DataLoader(train_data,
+                              batch_size=TRAIN_BATCH_SIZE,
+                              shuffle=True,
+                              num_workers=2,
+                              collate_fn=IndexVectorCollator())
+    test_loader = DataLoader(test_data,
+                             batch_size=TEST_BATCH_SIZE,
+                             shuffle=True,
+                             num_workers=2,
+                             collate_fn=IndexVectorCollator())
+
     writer = SummaryWriter(log_file, purge_step=epoch, flush_secs=60)
+
+    sample_input, sample_lens, _ = next(iter(train_loader))
+    summary(model=model, input_data=sample_input.cuda(), lens=sample_lens, device=torch.device('cuda'))
 
     print("Learning started")
 
@@ -83,7 +103,6 @@ def train_model(train_loader, test_loader, model, epochs=30):
         epoch_accuracy = []
         model.train()
 
-        # loss_fn = torch.nn.CrossEntropyLoss()
         loss_fn = FocalLoss(alpha=0.5, gamma=2)
 
         for step, (x, x_len, y) in enumerate(train_loader):
@@ -110,55 +129,41 @@ def train_model(train_loader, test_loader, model, epochs=30):
             best_model = copy.deepcopy(model)
             best_score = score
             print('New best score')
-            save_train_state(epoch, model, optimizer, scheduler, best_score, CHECKPOINT_FILE)
+            save_train_state(epoch, model, optimizer, scheduler, best_score, vocabulary, checkpoint_file)
         scheduler.step()
     if best_score < 0:
         best_score = evaluate(model, test_loader, writer=writer)
 
     writer.close()
-    save_file_path = os.path.join(SAVED_MODELS_PATH, '{}.{}.{:.2f}.pck'.format(model.__class__.__name__,
-                                                                               datetime.datetime.now().isoformat(),
-                                                                               best_score))
-    log_file_path = os.path.join(LOGS_DIR, '{}.{}.{:.2f}.pck'.format(model.__class__.__name__,
-                                                                     datetime.datetime.now().isoformat(),
-                                                                     best_score))
+    save_file_path = os.path.join(SAVED_MODELS_PATH,
+                                  '{}.{}.{}.{:.2f}.pck'.format(model.__class__.__name__, str(train_data_words),
+                                                               datetime.datetime.now().isoformat(),
+                                                               best_score))
+    log_file_path = os.path.join(LOGS_DIR, '{}.{}.{}.{:.2f}'.format(model.__class__.__name__, str(train_data_words),
+                                                                    datetime.datetime.now().isoformat(),
+                                                                    best_score))
     os.makedirs(os.path.dirname(save_file_path), exist_ok=True)
-    shutil.move(CHECKPOINT_FILE, save_file_path)
+    shutil.move(checkpoint_file, save_file_path)
     shutil.move(log_file, log_file_path)
 
     return best_model, best_score
 
 
-def train(epochs=30):
+def train(epochs, dataset_name: str):
     print(f'Training model for {epochs} epochs')
-    train_data_words = PreCachedDataset('data/enron.train.pck')
-    test_data_words = PreCachedDataset('data/enron.test.pck')
+    train_data_words = PreCachedDataset(os.path.join(DATA_DIRECTORY, f'{dataset_name}.train.pck'))
+    test_data_words = PreCachedDataset(os.path.join(DATA_DIRECTORY, f'{dataset_name}.test.pck'))
 
-    vocabulary = create_vocabulary(train_data_words, vocabulary_size=VOCABULARY_SIZE)
-
-    train_data = WordIndexDataset(train_data_words, vocabulary, max_words=MAX_MESSAGE_LENGTH_WORDS)
-    test_data = WordIndexDataset(test_data_words, vocabulary, max_words=MAX_MESSAGE_LENGTH_WORDS)
-
-    train_loader = torch.utils.data.DataLoader(train_data,
-                                               batch_size=TRAIN_BATCH_SIZE,
-                                               shuffle=True,
-                                               num_workers=2,
-                                               collate_fn=IndexVectorCollator())
-    test_loader = torch.utils.data.DataLoader(test_data,
-                                              batch_size=TEST_BATCH_SIZE,
-                                              shuffle=True,
-                                              num_workers=2,
-                                              collate_fn=IndexVectorCollator())
     model = SpamClassifier(VOCABULARY_SIZE)
-    model = model.cuda()
-    train_model(train_loader, test_loader, model, epochs)
+    train_model(train_data_words, test_data_words, model, epochs)
 
 
 if __name__ == "__main__":
     # noinspection PyTypeChecker
     parser = argparse.ArgumentParser(description='Train models.',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('--epochs', type=int, default=10, help='How many epochs to train for')
+    parser.add_argument('--epochs', type=int, default=25, help='How many epochs to train for')
+    parser.add_argument('--dataset', type=str, default='', required=True, help='Name of the dataset to use')
     args = parser.parse_args()
 
-    train(args.epochs)
+    train(args.epochs, args.dataset)
