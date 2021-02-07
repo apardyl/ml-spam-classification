@@ -1,0 +1,13 @@
+torch==1.7.1
+nltk==3.5
+numpy==1.20.0
+hiddenlayer==0.3
+graphviz==0.16
+torchinfo==0.0.5
+pystempel==1.2.0
+mail-parser==3.14.0
+scikit-learn==0.24.1
+beautifulsoup4==4.9.3
+lxml==4.6.2
+tensorboard==2.4.1
+matplotlib==3.3.4

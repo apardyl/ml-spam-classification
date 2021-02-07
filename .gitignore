@@ -1,0 +1,8 @@
+.idea/
+*.pck*
+data/enron
+data/spamassassin
+runs/*
+saved_models/*
+__pycache__/
+venv/
