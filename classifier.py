@@ -3,26 +3,25 @@ import sys
 
 import torch.nn.functional
 from torch import nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 
-from datasets import WordIndexDataset, MailDirDatasetEval, IndexVectorCollatorEval
+from datasets import WordIndexDataset, MailDirDatasetEval, IndexVectorCollatorEval, TextFileDatasetEval
 from models import SpamClassifier
 from settings import VOCABULARY_SIZE, MAX_MESSAGE_LENGTH_WORDS
 from utils import load_classifier
 
 
-def classify_messages(classifier_state_file: str, message_dir: str):
+def classify_messages(classifier_state_file: str, messages: Dataset):
     model = SpamClassifier(VOCABULARY_SIZE)
     model = model.cuda()
     vocabulary = load_classifier(classifier_state_file, model)
 
     print('Loaded classifier state from:', classifier_state_file, file=sys.stderr)
 
-    messages = MailDirDatasetEval(message_dir, language='en')
     samples = WordIndexDataset(messages, vocabulary, MAX_MESSAGE_LENGTH_WORDS)
     samples_loader = DataLoader(samples, batch_size=100, collate_fn=IndexVectorCollatorEval(), num_workers=8)
 
-    print('Processing messages in:', message_dir, file=sys.stderr)
+    print('Processing messages in:', messages, file=sys.stderr)
 
     spam, ham = 0, 0
 
@@ -43,6 +42,8 @@ if __name__ == "__main__":
                         help='Classifier state file (created by train.py)')
     parser.add_argument('-m', '--message_dir', type=str, required=True,
                         help='Directory with messages to process.')
+    parser.add_argument('-t', '--dataset_type', type=str, default='dir', choices=['dir', 'file'], help='Dataset type.')
     args = parser.parse_args()
-
-    classify_messages(args.classifier, args.message_dir)
+    dataset_class = TextFileDatasetEval if args.dataset_type == 'file' else MailDirDatasetEval
+    messages = dataset_class(args.message_dir, language='en')
+    classify_messages(args.classifier, messages)

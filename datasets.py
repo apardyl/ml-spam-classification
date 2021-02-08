@@ -103,6 +103,46 @@ class MailDirDataset(Dataset):
         return f'MailDirDataset-{self.root_path}'
 
 
+class TextFileDataset(Dataset):
+    def __init__(self, file_path: str, test=False, shuffle=True, language='en', no_split=False) -> None:
+        self.file_path = file_path
+        self.language = language
+
+        with open(file_path, 'r') as file:
+            lines = file.readlines()
+
+        self.spam_lines = [l[len('spam\t'):] for l in lines if l.startswith('spam')]
+        self.ham_lines = [l[len('ham\t'):] for l in lines if l.startswith('ham')]
+
+        if not no_split:
+            train_spam_lines, test_spam_lines = train_test_split(self.spam_lines, test_size=0.2)
+            train_ham_lines, test_ham_lines = train_test_split(self.ham_lines, test_size=0.2)
+
+            self.spam_lines = test_spam_lines if test else train_spam_lines
+            self.ham_lines = test_ham_lines if test else train_ham_lines
+
+        spam_data = [(m, 1) for m in self.spam_lines]
+        ham_data = [(m, 0) for m in self.ham_lines]
+        self.dataset = spam_data + ham_data
+
+        if shuffle:
+            random.shuffle(self.dataset)
+
+    def __getitem__(self, index):
+        x, y = self.dataset[index]
+        try:
+            return normalize(x, language=self.language), y
+        except BadMessage as ex:
+            print(f'File {x} ignored: {str(ex)}', file=sys.stderr)
+            return None, None
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __str__(self) -> str:
+        return f'TextFileDataset-{self.file_path}'
+
+
 class MailDirDatasetEval(Dataset):
     def __init__(self, root_path: str, language='en') -> None:
         self.root_path = root_path
@@ -119,6 +159,36 @@ class MailDirDatasetEval(Dataset):
 
     def __len__(self):
         return len(self.dataset)
+
+    def __str__(self) -> str:
+        return f'MailDirDataset-{self.root_path}'
+
+
+class TextFileDatasetEval(Dataset):
+    def __init__(self, file_path: str, language='en') -> None:
+        self.file_path = file_path
+        self.language = language
+
+        with open(file_path, 'r') as file:
+            lines = file.readlines()
+
+        spam_lines = [(l[len('spam\t'):], l) for l in lines if l.startswith('spam')]
+        ham_lines = [(l[len('ham\t'):], l) for l in lines if l.startswith('ham')]
+        self.dataset = spam_lines + ham_lines
+
+    def __getitem__(self, index):
+        x, y = self.dataset[index]
+        try:
+            return normalize(x, language=self.language), y
+        except BadMessage as ex:
+            print(f'File {x} ignored: {str(ex)}', file=sys.stderr)
+            return None, None
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __str__(self) -> str:
+        return f'TextFileDataset-{self.file_path}'
 
 
 def pre_cache_dataset(dataset: Dataset, save_location: str):
@@ -206,8 +276,10 @@ if __name__ == '__main__':
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--dataset', type=str, required=True, default='', help='Name of the dataset to process.')
     parser.add_argument('--language', type=str, default='en', choices=['en', 'pl'], help='Dataset language.')
+    parser.add_argument('--dataset_type', type=str, default='dir', choices=['dir', 'file'], help='Dataset type.')
     args = parser.parse_args()
-    pre_cache_dataset(MailDirDataset(os.path.join(DATA_DIRECTORY, args.dataset), language=args.language, test=False),
+    dataset_class = TextFileDataset if args.dataset_type == 'file' else MailDirDataset
+    pre_cache_dataset(dataset_class(os.path.join(DATA_DIRECTORY, args.dataset), language=args.language, test=False),
                       os.path.join(DATA_DIRECTORY, f'{args.dataset}.train.pck'))
-    pre_cache_dataset(MailDirDataset(os.path.join(DATA_DIRECTORY, args.dataset), language=args.language, test=True),
+    pre_cache_dataset(dataset_class(os.path.join(DATA_DIRECTORY, args.dataset), language=args.language, test=True),
                       os.path.join(DATA_DIRECTORY, f'{args.dataset}.test.pck'))
